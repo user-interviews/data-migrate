@@ -193,8 +193,8 @@ describe DataMigrate::DatabaseTasks do
         expect(created_configs).to contain_exactly(primary_db_config, secondary_db_config)
         expect(ActiveRecord::Tasks::DatabaseTasks).to have_received(:load_schema).with(primary_db_config, :ruby, nil)
         expect(ActiveRecord::Tasks::DatabaseTasks).to have_received(:load_schema).with(secondary_db_config, :sql, nil)
-        expect(ActiveRecord::Tasks::DatabaseTasks).to have_received(:dump_schema).with(primary_db_config)
-        expect(ActiveRecord::Tasks::DatabaseTasks).to have_received(:dump_schema).with(secondary_db_config)
+        expect(ActiveRecord::Tasks::DatabaseTasks).to have_received(:dump_schema).with(primary_db_config, :ruby)
+        expect(ActiveRecord::Tasks::DatabaseTasks).to have_received(:dump_schema).with(secondary_db_config, :sql)
         expect(subject).to have_received(:load).with(primary_data_schema_path).once
         expect(subject).to have_received(:migrate_with_data)
         expect(DataMigrate::Tasks::DataMigrateTasks).to have_received(:dump)
@@ -222,8 +222,8 @@ describe DataMigrate::DatabaseTasks do
         expect(ActiveRecord::Tasks::DatabaseTasks).not_to have_received(:load_schema)
         expect(subject).not_to have_received(:load)
         expect(subject).to have_received(:migrate_with_data)
-        expect(ActiveRecord::Tasks::DatabaseTasks).to have_received(:dump_schema).with(primary_db_config)
-        expect(ActiveRecord::Tasks::DatabaseTasks).to have_received(:dump_schema).with(secondary_db_config)
+        expect(ActiveRecord::Tasks::DatabaseTasks).to have_received(:dump_schema).with(primary_db_config, :ruby)
+        expect(ActiveRecord::Tasks::DatabaseTasks).to have_received(:dump_schema).with(secondary_db_config, :sql)
         expect(DataMigrate::Tasks::DataMigrateTasks).to have_received(:dump)
         expect(subject).not_to have_received(:load_seed)
       end

@@ -227,7 +227,12 @@ module DataMigrate
       return unless dump_schema_after_migration?
 
       each_current_configuration(env) do |db_config|
-        ActiveRecord::Tasks::DatabaseTasks.dump_schema(db_config)
+        with_temporary_pool(db_config) do
+          ActiveRecord::Tasks::DatabaseTasks.dump_schema(
+            db_config,
+            schema_format_for(db_config)
+          )
+        end
       end
 
       # data:dump and seeds should run against the primary environment connection,
