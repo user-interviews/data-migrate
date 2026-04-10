@@ -226,10 +226,9 @@ module DataMigrate
 
       return unless dump_schema_after_migration?
 
-      # Use Rails' task-driven dump path so multi-database apps produce the
-      # same schema artifacts as the standard migration tasks.
-      Rake::Task["db:_dump"].reenable
-      Rake::Task["db:_dump"].invoke
+      each_current_configuration(env) do |db_config|
+        ActiveRecord::Tasks::DatabaseTasks.dump_schema(db_config)
+      end
 
       # data:dump and seeds should run against the primary environment connection,
       # not whichever temporary pool was used most recently.
@@ -238,7 +237,8 @@ module DataMigrate
 
       return unless seed
 
-      migration_class.establish_connection(env.to_sym)
+      # data:dump can switch ActiveRecord::Base to an override configuration.
+      migration_class.establish_connection(env.to_sym) if DataMigrate.config.db_configuration
       load_seed
     end
 
@@ -274,14 +274,15 @@ module DataMigrate
     end
 
     def self.load_schema_for(db_config)
-      schema_path = ActiveRecord::Tasks::DatabaseTasks.schema_dump_path(db_config)
+      schema_format = schema_format_for(db_config)
+      schema_path = ActiveRecord::Tasks::DatabaseTasks.schema_dump_path(db_config, schema_format)
       return unless schema_path && File.exist?(schema_path)
 
       # Call Rails' database task module directly. Invoking the mixed-in helper
       # here can misresolve structure_load_flags during fresh setup.
       ActiveRecord::Tasks::DatabaseTasks.load_schema(
         db_config,
-        schema_format_for(db_config),
+        schema_format,
         nil
       )
 
@@ -306,6 +307,13 @@ module DataMigrate
 
       schema_format
     end
+
+    private_class_method :initialize_missing_databases_with_data_schema,
+      :initialize_database_with_schema,
+      :pooled_connection,
+      :load_schema_for,
+      :seeds?,
+      :schema_format_for
 
     private
 

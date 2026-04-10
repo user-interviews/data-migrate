@@ -1,6 +1,5 @@
 # frozen_string_literal: true
 
-require "rake"
 require "spec_helper"
 
 describe DataMigrate::DatabaseTasks do
@@ -113,6 +112,7 @@ describe DataMigrate::DatabaseTasks do
           database: "spec/db/test.db"
         ).tap do |db_config|
           db_config.define_singleton_method(:seeds?) { true }
+          db_config.define_singleton_method(:schema_format) { :ruby }
         end
       end
 
@@ -124,6 +124,7 @@ describe DataMigrate::DatabaseTasks do
           database: "spec/db/secondary_test.db"
         ).tap do |db_config|
           db_config.define_singleton_method(:seeds?) { false }
+          db_config.define_singleton_method(:schema_format) { :sql }
         end
       end
 
@@ -132,7 +133,6 @@ describe DataMigrate::DatabaseTasks do
       let(:primary_connection) { double("PrimaryConnection") }
       let(:secondary_connection) { double("SecondaryConnection") }
       let(:migration_class) { class_double(ActiveRecord::Base, establish_connection: true) }
-      let(:dump_task) { double("Rake::Task", reenable: true, invoke: true) }
       let(:primary_structure_path) { "spec/db/schema.rb" }
       let(:secondary_structure_path) { "spec/db/secondary_schema.rb" }
       let(:primary_data_schema_path) { "spec/db/data_schema.rb" }
@@ -161,10 +161,12 @@ describe DataMigrate::DatabaseTasks do
         allow(subject).to receive(:database_exists?).with(secondary_connection).and_return(false)
         allow(subject).to receive(:create) { |db_config| created_configs << db_config }
 
-        allow(ActiveRecord::Tasks::DatabaseTasks).to receive(:schema_dump_path) do |db_config|
-          if db_config == primary_db_config
+        # Return a path only for the expected per-database format so this spec
+        # fails if prepare_all_with_data resolves schema dumps with the wrong format.
+        allow(ActiveRecord::Tasks::DatabaseTasks).to receive(:schema_dump_path) do |db_config, format = nil|
+          if db_config == primary_db_config && format == :ruby
             primary_structure_path
-          else
+          elsif db_config == secondary_db_config && format == :sql
             secondary_structure_path
           end
         end
@@ -179,7 +181,7 @@ describe DataMigrate::DatabaseTasks do
         allow(subject).to receive(:load_seed)
         allow(subject).to receive(:migration_class).and_return(migration_class)
         allow(DataMigrate::Tasks::DataMigrateTasks).to receive(:dump)
-        allow(Rake::Task).to receive(:[]).with("db:_dump").and_return(dump_task)
+        allow(ActiveRecord::Tasks::DatabaseTasks).to receive(:dump_schema)
 
         configurations = ActiveRecord::DatabaseConfigurations.new([primary_db_config, secondary_db_config])
         allow(ActiveRecord::Base).to receive(:configurations).and_return(configurations)
@@ -190,14 +192,24 @@ describe DataMigrate::DatabaseTasks do
 
         expect(created_configs).to contain_exactly(primary_db_config, secondary_db_config)
         expect(ActiveRecord::Tasks::DatabaseTasks).to have_received(:load_schema).with(primary_db_config, :ruby, nil)
-        expect(ActiveRecord::Tasks::DatabaseTasks).to have_received(:load_schema).with(secondary_db_config, :ruby, nil)
+        expect(ActiveRecord::Tasks::DatabaseTasks).to have_received(:load_schema).with(secondary_db_config, :sql, nil)
+        expect(ActiveRecord::Tasks::DatabaseTasks).to have_received(:dump_schema).with(primary_db_config)
+        expect(ActiveRecord::Tasks::DatabaseTasks).to have_received(:dump_schema).with(secondary_db_config)
         expect(subject).to have_received(:load).with(primary_data_schema_path).once
         expect(subject).to have_received(:migrate_with_data)
-        expect(dump_task).to have_received(:reenable)
-        expect(dump_task).to have_received(:invoke)
         expect(DataMigrate::Tasks::DataMigrateTasks).to have_received(:dump)
-        expect(migration_class).to have_received(:establish_connection).with(subject.env.to_sym).twice
+        expect(migration_class).to have_received(:establish_connection).with(subject.env.to_sym).once
         expect(subject).to have_received(:load_seed)
+      end
+
+      it "restores the primary connection before seeding when data dump uses an override connection" do
+        DataMigrate.config.db_configuration = { adapter: "sqlite3", database: "spec/db/override.db" }
+
+        subject.prepare_all_with_data
+
+        expect(migration_class).to have_received(:establish_connection).with(subject.env.to_sym).twice
+      ensure
+        DataMigrate.config.db_configuration = nil
       end
 
       it "skips setup work for existing databases but still migrates and dumps" do
@@ -210,7 +222,8 @@ describe DataMigrate::DatabaseTasks do
         expect(ActiveRecord::Tasks::DatabaseTasks).not_to have_received(:load_schema)
         expect(subject).not_to have_received(:load)
         expect(subject).to have_received(:migrate_with_data)
-        expect(dump_task).to have_received(:invoke)
+        expect(ActiveRecord::Tasks::DatabaseTasks).to have_received(:dump_schema).with(primary_db_config)
+        expect(ActiveRecord::Tasks::DatabaseTasks).to have_received(:dump_schema).with(secondary_db_config)
         expect(DataMigrate::Tasks::DataMigrateTasks).to have_received(:dump)
         expect(subject).not_to have_received(:load_seed)
       end
