@@ -4,6 +4,7 @@ gemfiles/.bundle
 spec/db/test.db
 spec/db/other_test.db
 spec/db/data_schema.rb
+spec/db/secondary_test.db
 .vscode/
 .DS_Store
 .ruby-gemset
