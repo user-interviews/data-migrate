@@ -225,26 +225,27 @@ module DataMigrate
 
       migrate_with_data
 
-      return unless dump_schema_after_migration?
-
-      each_current_configuration(env) do |db_config|
-        with_temporary_pool(db_config) do
-          ActiveRecord::Tasks::DatabaseTasks.dump_schema(
-            db_config,
-            schema_format_for(db_config)
-          )
+      if dump_schema_after_migration?
+        each_current_configuration(env) do |db_config|
+          with_temporary_pool(db_config) do
+            ActiveRecord::Tasks::DatabaseTasks.dump_schema(
+              db_config,
+              schema_format_for(db_config)
+            )
+          end
         end
-      end
 
-      # data:dump and seeds should run against the primary environment connection,
-      # not whichever temporary pool was used most recently.
-      migration_class.establish_connection(env.to_sym)
-      DataMigrate::Tasks::DataMigrateTasks.dump
+        # data:dump should run against the primary environment connection,
+        # not whichever temporary pool was used most recently.
+        migration_class.establish_connection(env.to_sym)
+        DataMigrate::Tasks::DataMigrateTasks.dump
+      end
 
       return unless seed
 
-      # data:dump can switch ActiveRecord::Base to an override configuration.
-      migration_class.establish_connection(env.to_sym) if DataMigrate.config.db_configuration
+      # seeds should run against the primary environment connection. data:dump can
+      # also switch ActiveRecord::Base to an override configuration.
+      migration_class.establish_connection(env.to_sym)
       load_seed
     end
 

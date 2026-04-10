@@ -208,7 +208,7 @@ describe DataMigrate::DatabaseTasks do
         expect(subject).to have_received(:load).with(primary_data_schema_path).once
         expect(subject).to have_received(:migrate_with_data)
         expect(DataMigrate::Tasks::DataMigrateTasks).to have_received(:dump)
-        expect(migration_class).to have_received(:establish_connection).with(subject.env.to_sym).once
+        expect(migration_class).to have_received(:establish_connection).with(subject.env.to_sym).twice
         expect(subject).to have_received(:load_seed)
       end
 
@@ -220,6 +220,22 @@ describe DataMigrate::DatabaseTasks do
         expect(migration_class).to have_received(:establish_connection).with(subject.env.to_sym).twice
       ensure
         DataMigrate.config.db_configuration = nil
+      end
+
+      it "still seeds but skips schema and data dumps when dump_schema_after_migration is false" do
+        allow(subject).to receive(:dump_schema_after_migration?).and_return(false)
+
+        subject.prepare_all_with_data
+
+        expect(created_configs).to contain_exactly(primary_db_config, secondary_db_config)
+        expect(ActiveRecord::Tasks::DatabaseTasks).to have_received(:load_schema).with(primary_db_config, :ruby, nil)
+        expect(ActiveRecord::Tasks::DatabaseTasks).to have_received(:load_schema).with(secondary_db_config, :sql, nil)
+        expect(ActiveRecord::Tasks::DatabaseTasks).not_to have_received(:dump_schema)
+        expect(subject).to have_received(:load).with(primary_data_schema_path).once
+        expect(subject).to have_received(:migrate_with_data)
+        expect(DataMigrate::Tasks::DataMigrateTasks).not_to have_received(:dump)
+        expect(migration_class).to have_received(:establish_connection).with(subject.env.to_sym).once
+        expect(subject).to have_received(:load_seed)
       end
 
       it "skips setup work for existing databases but still migrates and dumps" do
