@@ -131,13 +131,14 @@ module DataMigrate
       end
     end
 
-    def schema_dump_path(db_config, format = ActiveRecord.schema_format)
+    def schema_dump_path(db_config, format = nil)
+      format ||= schema_format
       return ENV["DATA_SCHEMA"] if ENV["DATA_SCHEMA"]
 
       # We only require a schema.rb file for the primary database
-      return unless db_config.primary?
+      return unless primary?(db_config)
 
-      File.join(File.dirname(ActiveRecord::Tasks::DatabaseTasks.schema_dump_path(db_config, format)), schema_file_type)
+      File.join(File.dirname(rails_schema_dump_path_for(db_config, format)), schema_file_type)
     end
 
     # Override this method from `ActiveRecord::Tasks::DatabaseTasks`
@@ -280,7 +281,7 @@ module DataMigrate
 
     def self.load_schema_for(db_config)
       schema_format = schema_format_for(db_config)
-      schema_path = ActiveRecord::Tasks::DatabaseTasks.schema_dump_path(db_config, schema_format)
+      schema_path = rails_schema_dump_path_for(db_config, schema_format)
       return unless schema_path && File.exist?(schema_path)
 
       # Call Rails' database task module directly. Invoking the mixed-in helper
@@ -313,12 +314,21 @@ module DataMigrate
       schema_format
     end
 
+    def self.rails_schema_dump_path_for(db_config, schema_format)
+      if ActiveRecord::Tasks::DatabaseTasks.respond_to?(:schema_dump_path)
+        ActiveRecord::Tasks::DatabaseTasks.schema_dump_path(db_config, schema_format)
+      else
+        ActiveRecord::Tasks::DatabaseTasks.dump_filename(db_config.name, schema_format)
+      end
+    end
+
     private_class_method :initialize_missing_databases_with_data_schema,
       :initialize_database_with_schema,
       :pooled_connection,
       :load_schema_for,
       :seeds?,
-      :schema_format_for
+      :schema_format_for,
+      :rails_schema_dump_path_for
 
     private
 

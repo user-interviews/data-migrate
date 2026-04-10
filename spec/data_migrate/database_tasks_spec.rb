@@ -163,11 +163,21 @@ describe DataMigrate::DatabaseTasks do
 
         # Return a path only for the expected per-database format so this spec
         # fails if prepare_all_with_data resolves schema dumps with the wrong format.
-        allow(ActiveRecord::Tasks::DatabaseTasks).to receive(:schema_dump_path) do |db_config, format = nil|
-          if db_config == primary_db_config && format == :ruby
-            primary_structure_path
-          elsif db_config == secondary_db_config && format == :sql
-            secondary_structure_path
+        if DataMigrate::RailsHelper.rails_version_equal_to_or_higher_than_7_0
+          allow(ActiveRecord::Tasks::DatabaseTasks).to receive(:schema_dump_path) do |db_config, format = nil|
+            if db_config == primary_db_config && format == :ruby
+              primary_structure_path
+            elsif db_config == secondary_db_config && format == :sql
+              secondary_structure_path
+            end
+          end
+        else
+          allow(ActiveRecord::Tasks::DatabaseTasks).to receive(:dump_filename) do |db_name, format = nil|
+            if db_name == primary_db_config.name && format == :ruby
+              primary_structure_path
+            elsif db_name == secondary_db_config.name && format == :sql
+              secondary_structure_path
+            end
           end
         end
 
