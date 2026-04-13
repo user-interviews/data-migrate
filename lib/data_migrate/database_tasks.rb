@@ -131,20 +131,25 @@ module DataMigrate
       end
     end
 
-    def schema_dump_path(db_config, format = ActiveRecord.schema_format)
+    def schema_dump_path(db_config, format = nil)
+      format ||= schema_format
       return ENV["DATA_SCHEMA"] if ENV["DATA_SCHEMA"]
 
       # We only require a schema.rb file for the primary database
-      return unless db_config.primary?
+      return unless primary?(db_config)
 
-      File.join(File.dirname(ActiveRecord::Tasks::DatabaseTasks.schema_dump_path(db_config, format)), schema_file_type)
+      File.join(File.dirname(rails_schema_dump_path_for(db_config, format)), schema_file_type)
     end
 
     # Override this method from `ActiveRecord::Tasks::DatabaseTasks`
     # to ensure that the sha saved in ar_internal_metadata table
     # is from the original schema.rb file
     def schema_sha1(file)
-      ActiveRecord::Tasks::DatabaseTasks.schema_dump_path(ActiveRecord::Base.configurations.configs_for(env_name: ActiveRecord::Tasks::DatabaseTasks.env, name: "primary"))
+      primary_db_config = ActiveRecord::Base.configurations.configs_for(
+        env_name: ActiveRecord::Tasks::DatabaseTasks.env,
+        name: "primary"
+      )
+      rails_schema_dump_path_for(primary_db_config, schema_format)
     end
 
     def forward(step = 1)
@@ -220,36 +225,115 @@ module DataMigrate
     end
 
     def self.prepare_all_with_data
+      seed = initialize_missing_databases_with_data_schema
+
+      migrate_with_data
+
+      if dump_schema_after_migration?
+        each_current_configuration(env) do |db_config|
+          with_temporary_pool(db_config) do
+            ActiveRecord::Tasks::DatabaseTasks.dump_schema(
+              db_config,
+              schema_format_for(db_config)
+            )
+          end
+        end
+
+        # data:dump should run against the primary environment connection,
+        # not whichever temporary pool was used most recently.
+        migration_class.establish_connection(env.to_sym)
+        DataMigrate::Tasks::DataMigrateTasks.dump
+      end
+
+      return unless seed
+
+      # seeds should run against the primary environment connection. data:dump can
+      # also switch ActiveRecord::Base to an override configuration.
+      migration_class.establish_connection(env.to_sym)
+      load_seed
+    end
+
+    def self.initialize_missing_databases_with_data_schema
       seed = false
 
       each_current_configuration(env) do |db_config|
-        next unless primary?(db_config)
-
-        with_temporary_pool(db_config) do |pool|
-          connection = pool.respond_to?(:lease_connection) ? pool.lease_connection : pool.connection
-          unless database_exists?(connection)
-            create(db_config)
-            if File.exist?(schema_dump_path(db_config))
-              load_schema(db_config, schema_format, nil)
-              load_schema_current(
-                :ruby,
-                ENV["DATA_SCHEMA"]
-              )
-            end
-
-            seed = true
-          end
-
-          migrate_with_data
-          if dump_schema_after_migration?
-            dump_schema(db_config)
-            DataMigrate::Tasks::DataMigrateTasks.dump
-          end
-        end
+        seed = initialize_database_with_schema(db_config) || seed
       end
 
-      load_seed if seed
+      seed
     end
+
+    def self.initialize_database_with_schema(db_config)
+      seeded_database = false
+
+      with_temporary_pool(db_config) do |pool|
+        connection = pooled_connection(pool)
+        next if database_exists?(connection)
+
+        create(db_config)
+        load_schema_for(db_config)
+        seeded_database = seeds?(db_config)
+      end
+
+      seeded_database
+    end
+
+    def self.pooled_connection(pool)
+      return pool.lease_connection if pool.respond_to?(:lease_connection)
+
+      pool.connection
+    end
+
+    def self.load_schema_for(db_config)
+      schema_format = schema_format_for(db_config)
+      schema_path = rails_schema_dump_path_for(db_config, schema_format)
+      return unless schema_path && File.exist?(schema_path)
+
+      # Call Rails' database task module directly. Invoking the mixed-in helper
+      # here can misresolve structure_load_flags during fresh setup.
+      ActiveRecord::Tasks::DatabaseTasks.load_schema(
+        db_config,
+        schema_format,
+        nil
+      )
+
+      return unless primary?(db_config)
+
+      data_schema_path = schema_dump_path(db_config)
+      return unless data_schema_path && File.exist?(data_schema_path)
+
+      # Loading the primary data schema file directly keeps the version stamping
+      # on the same connection that just loaded the primary schema.
+      load(data_schema_path)
+    end
+
+    def self.seeds?(db_config)
+      return db_config.seeds? if db_config.respond_to?(:seeds?)
+
+      primary?(db_config)
+    end
+
+    def self.schema_format_for(db_config)
+      return db_config.schema_format if db_config.respond_to?(:schema_format)
+
+      schema_format
+    end
+
+    def self.rails_schema_dump_path_for(db_config, schema_format)
+      if ActiveRecord::Tasks::DatabaseTasks.respond_to?(:schema_dump_path)
+        ActiveRecord::Tasks::DatabaseTasks.schema_dump_path(db_config, schema_format)
+      else
+        ActiveRecord::Tasks::DatabaseTasks.dump_filename(db_config.name, schema_format)
+      end
+    end
+
+    private_class_method :initialize_missing_databases_with_data_schema,
+      :initialize_database_with_schema,
+      :pooled_connection,
+      :load_schema_for,
+      :seeds?,
+      :schema_format_for,
+      :rails_schema_dump_path_for
 
     private
 

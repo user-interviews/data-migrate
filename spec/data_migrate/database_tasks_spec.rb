@@ -104,110 +104,154 @@ describe DataMigrate::DatabaseTasks do
     end
 
     describe :prepare_all_with_data do
-      let(:db_config) do
+      let(:primary_db_config) do
         ActiveRecord::DatabaseConfigurations::HashConfig.new(
           'test',
           'primary',
           adapter: "sqlite3",
           database: "spec/db/test.db"
-        )
+        ).tap do |db_config|
+          db_config.define_singleton_method(:seeds?) { true }
+          db_config.define_singleton_method(:schema_format) { :ruby }
+        end
       end
 
-      let(:pool) { double("ConnectionPool") }
-      let(:connection) { double("Connection") }
+      let(:secondary_db_config) do
+        ActiveRecord::DatabaseConfigurations::HashConfig.new(
+          'test',
+          'secondary',
+          adapter: "sqlite3",
+          database: "spec/db/secondary_test.db"
+        ).tap do |db_config|
+          db_config.define_singleton_method(:seeds?) { false }
+          db_config.define_singleton_method(:schema_format) { :sql }
+        end
+      end
+
+      let(:primary_pool) { double("PrimaryConnectionPool") }
+      let(:secondary_pool) { double("SecondaryConnectionPool") }
+      let(:primary_connection) { double("PrimaryConnection") }
+      let(:secondary_connection) { double("SecondaryConnection") }
+      let(:migration_class) { class_double(ActiveRecord::Base, establish_connection: true) }
+      let(:primary_structure_path) { "spec/db/schema.rb" }
+      let(:secondary_structure_path) { "spec/db/secondary_schema.rb" }
+      let(:primary_data_schema_path) { "spec/db/data_schema.rb" }
+      let(:created_configs) { [] }
 
       before do
-        allow(subject).to receive(:each_current_configuration).and_yield(db_config)
-        allow(subject).to receive(:with_temporary_pool).with(db_config).and_yield(pool)
-        allow(pool).to receive(:lease_connection).and_return(connection)
-        allow(subject).to receive(:schema_dump_path).and_return("db/data_schema.rb")
-        allow(File).to receive(:exist?).and_return(true)
-        allow(subject).to receive(:load_schema)
-        allow(subject).to receive(:load_schema_current)
-        allow(subject).to receive(:migrate_with_data)
-        allow(subject).to receive(:dump_schema)
-        allow(DataMigrate::Tasks::DataMigrateTasks).to receive(:dump)
-        allow(subject).to receive(:load_seed)
+        allow(subject).to receive(:each_current_configuration) do |*_args, &block|
+          block.call(primary_db_config)
+          block.call(secondary_db_config)
+        end
 
-        configurations = ActiveRecord::DatabaseConfigurations.new([db_config])
+        allow(subject).to receive(:with_temporary_pool) do |db_config, &block|
+          pool =
+            if db_config == primary_db_config
+              primary_pool
+            else
+              secondary_pool
+            end
+
+          block.call(pool)
+        end
+
+        allow(primary_pool).to receive(:lease_connection).and_return(primary_connection)
+        allow(secondary_pool).to receive(:lease_connection).and_return(secondary_connection)
+        allow(subject).to receive(:database_exists?).with(primary_connection).and_return(false)
+        allow(subject).to receive(:database_exists?).with(secondary_connection).and_return(false)
+        allow(subject).to receive(:create) { |db_config| created_configs << db_config }
+
+        # Return a path only for the expected per-database format so this spec
+        # fails if prepare_all_with_data resolves schema dumps with the wrong format.
+        if DataMigrate::RailsHelper.rails_version_equal_to_or_higher_than_7_0
+          allow(ActiveRecord::Tasks::DatabaseTasks).to receive(:schema_dump_path) do |db_config, format = nil|
+            if db_config == primary_db_config && format == :ruby
+              primary_structure_path
+            elsif db_config == secondary_db_config && format == :sql
+              secondary_structure_path
+            end
+          end
+        else
+          allow(ActiveRecord::Tasks::DatabaseTasks).to receive(:dump_filename) do |db_name, format = nil|
+            if db_name == primary_db_config.name && format == :ruby
+              primary_structure_path
+            elsif db_name == secondary_db_config.name && format == :sql
+              secondary_structure_path
+            end
+          end
+        end
+
+        allow(File).to receive(:exist?).and_return(false)
+        allow(File).to receive(:exist?).with(primary_structure_path).and_return(true)
+        allow(File).to receive(:exist?).with(secondary_structure_path).and_return(true)
+        allow(File).to receive(:exist?).with(primary_data_schema_path).and_return(true)
+        allow(ActiveRecord::Tasks::DatabaseTasks).to receive(:load_schema)
+        allow(subject).to receive(:load)
+        allow(subject).to receive(:migrate_with_data)
+        allow(subject).to receive(:load_seed)
+        allow(subject).to receive(:migration_class).and_return(migration_class)
+        allow(DataMigrate::Tasks::DataMigrateTasks).to receive(:dump)
+        allow(ActiveRecord::Tasks::DatabaseTasks).to receive(:dump_schema)
+
+        configurations = ActiveRecord::DatabaseConfigurations.new([primary_db_config, secondary_db_config])
         allow(ActiveRecord::Base).to receive(:configurations).and_return(configurations)
       end
 
-      context "when the database does not exist" do
-        before do
-          allow(subject).to receive(:database_exists?).with(connection).and_return(false)
-          allow_any_instance_of(ActiveRecord::Tasks::DatabaseTasks).to receive(:create)
-            .and_return(true)
-        end
+      it "initializes current databases and only loads data schema for the primary database" do
+        subject.prepare_all_with_data
 
-        it "creates the database" do
-          expect_any_instance_of(ActiveRecord::Tasks::DatabaseTasks).to receive(:create)
-            .with(db_config)
-          subject.prepare_all_with_data
-        end
-
-        it "loads the schema" do
-          expect(subject).to receive(:load_schema).with(
-            db_config,
-            subject.send(:schema_format),
-            nil
-          )
-          subject.prepare_all_with_data
-        end
-
-        it "loads the current data schema" do
-          expect(subject).to receive(:load_schema_current).with(:ruby, ENV["DATA_SCHEMA"])
-          subject.prepare_all_with_data
-        end
-
-        it "runs migrations with data" do
-          expect(subject).to receive(:migrate_with_data)
-          subject.prepare_all_with_data
-        end
-
-        it "dumps the schema after migration" do
-          expect(subject).to receive(:dump_schema).with(db_config)
-          expect(DataMigrate::Tasks::DataMigrateTasks).to receive(:dump)
-          subject.prepare_all_with_data
-        end
-
-        it "loads seed data" do
-          expect(subject).to receive(:load_seed)
-          subject.prepare_all_with_data
-        end
+        expect(created_configs).to contain_exactly(primary_db_config, secondary_db_config)
+        expect(ActiveRecord::Tasks::DatabaseTasks).to have_received(:load_schema).with(primary_db_config, :ruby, nil)
+        expect(ActiveRecord::Tasks::DatabaseTasks).to have_received(:load_schema).with(secondary_db_config, :sql, nil)
+        expect(ActiveRecord::Tasks::DatabaseTasks).to have_received(:dump_schema).with(primary_db_config, :ruby)
+        expect(ActiveRecord::Tasks::DatabaseTasks).to have_received(:dump_schema).with(secondary_db_config, :sql)
+        expect(subject).to have_received(:load).with(primary_data_schema_path).once
+        expect(subject).to have_received(:migrate_with_data)
+        expect(DataMigrate::Tasks::DataMigrateTasks).to have_received(:dump)
+        expect(migration_class).to have_received(:establish_connection).with(subject.env.to_sym).twice
+        expect(subject).to have_received(:load_seed)
       end
 
-      context "when the database exists" do
-        before do
-          allow(subject).to receive(:database_exists?).with(connection).and_return(true)
-        end
+      it "restores the primary connection before seeding when data dump uses an override connection" do
+        DataMigrate.config.db_configuration = { adapter: "sqlite3", database: "spec/db/override.db" }
 
-        it "does not create the database" do
-          expect(ActiveRecord::Tasks::DatabaseTasks).not_to receive(:create)
-          subject.prepare_all_with_data
-        end
+        subject.prepare_all_with_data
 
-        it "does not load the schema" do
-          expect(subject).not_to receive(:load_schema)
-          expect(subject).not_to receive(:load_schema_current)
-          subject.prepare_all_with_data
-        end
+        expect(migration_class).to have_received(:establish_connection).with(subject.env.to_sym).twice
+      ensure
+        DataMigrate.config.db_configuration = nil
+      end
 
-        it "runs migrations with data" do
-          expect(subject).to receive(:migrate_with_data)
-          subject.prepare_all_with_data
-        end
+      it "still seeds but skips schema and data dumps when dump_schema_after_migration is false" do
+        allow(subject).to receive(:dump_schema_after_migration?).and_return(false)
 
-        it "dumps the schema after migration" do
-          expect(subject).to receive(:dump_schema).with(db_config)
-          expect(DataMigrate::Tasks::DataMigrateTasks).to receive(:dump)
-          subject.prepare_all_with_data
-        end
+        subject.prepare_all_with_data
 
-        it "does not load seed data" do
-          expect(subject).not_to receive(:load_seed)
-          subject.prepare_all_with_data
-        end
+        expect(created_configs).to contain_exactly(primary_db_config, secondary_db_config)
+        expect(ActiveRecord::Tasks::DatabaseTasks).to have_received(:load_schema).with(primary_db_config, :ruby, nil)
+        expect(ActiveRecord::Tasks::DatabaseTasks).to have_received(:load_schema).with(secondary_db_config, :sql, nil)
+        expect(ActiveRecord::Tasks::DatabaseTasks).not_to have_received(:dump_schema)
+        expect(subject).to have_received(:load).with(primary_data_schema_path).once
+        expect(subject).to have_received(:migrate_with_data)
+        expect(DataMigrate::Tasks::DataMigrateTasks).not_to have_received(:dump)
+        expect(migration_class).to have_received(:establish_connection).with(subject.env.to_sym).once
+        expect(subject).to have_received(:load_seed)
+      end
+
+      it "skips setup work for existing databases but still migrates and dumps" do
+        allow(subject).to receive(:database_exists?).with(primary_connection).and_return(true)
+        allow(subject).to receive(:database_exists?).with(secondary_connection).and_return(true)
+
+        subject.prepare_all_with_data
+
+        expect(created_configs).to be_empty
+        expect(ActiveRecord::Tasks::DatabaseTasks).not_to have_received(:load_schema)
+        expect(subject).not_to have_received(:load)
+        expect(subject).to have_received(:migrate_with_data)
+        expect(ActiveRecord::Tasks::DatabaseTasks).to have_received(:dump_schema).with(primary_db_config, :ruby)
+        expect(ActiveRecord::Tasks::DatabaseTasks).to have_received(:dump_schema).with(secondary_db_config, :sql)
+        expect(DataMigrate::Tasks::DataMigrateTasks).to have_received(:dump)
+        expect(subject).not_to have_received(:load_seed)
       end
     end
   end
