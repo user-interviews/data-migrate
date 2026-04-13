@@ -5,6 +5,8 @@ spec/db/test.db
 spec/db/other_test.db
 spec/db/data_schema.rb
 spec/db/secondary_test.db
+spec/db/*.db-shm
+spec/db/*.db-wal
 .vscode/
 .DS_Store
 .ruby-gemset
