@@ -145,7 +145,11 @@ module DataMigrate
     # to ensure that the sha saved in ar_internal_metadata table
     # is from the original schema.rb file
     def schema_sha1(file)
-      ActiveRecord::Tasks::DatabaseTasks.schema_dump_path(ActiveRecord::Base.configurations.configs_for(env_name: ActiveRecord::Tasks::DatabaseTasks.env, name: "primary"))
+      primary_db_config = ActiveRecord::Base.configurations.configs_for(
+        env_name: ActiveRecord::Tasks::DatabaseTasks.env,
+        name: "primary"
+      )
+      rails_schema_dump_path_for(primary_db_config, schema_format)
     end
 
     def forward(step = 1)
