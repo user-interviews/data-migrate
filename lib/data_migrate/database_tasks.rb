@@ -268,7 +268,7 @@ module DataMigrate
 
       with_temporary_pool(db_config) do |pool|
         begin
-          database_initialized = database_initialized?(pool)
+          database_initialized = database_initialized?
         rescue ActiveRecord::NoDatabaseError
           create(db_config)
           retry
@@ -285,7 +285,7 @@ module DataMigrate
 
     # Match Rails db:prepare behavior: a provisioned-but-empty database still
     # needs the schema restored before migrations run.
-    def self.database_initialized?(_pool)
+    def self.database_initialized?
       DataMigrate::RailsHelper.schema_migration.table_exists?
     end
 
