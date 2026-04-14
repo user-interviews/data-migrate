@@ -130,8 +130,6 @@ describe DataMigrate::DatabaseTasks do
 
       let(:primary_pool) { double("PrimaryConnectionPool") }
       let(:secondary_pool) { double("SecondaryConnectionPool") }
-      let(:primary_connection) { double("PrimaryConnection") }
-      let(:secondary_connection) { double("SecondaryConnection") }
       let(:migration_class) { class_double(ActiveRecord::Base, establish_connection: true) }
       let(:primary_structure_path) { "spec/db/schema.rb" }
       let(:secondary_structure_path) { "spec/db/secondary_schema.rb" }
@@ -139,6 +137,8 @@ describe DataMigrate::DatabaseTasks do
       let(:created_configs) { [] }
 
       before do
+        initialization_checks = Hash.new(0)
+
         allow(subject).to receive(:each_current_configuration) do |*_args, &block|
           block.call(primary_db_config)
           block.call(secondary_db_config)
@@ -155,10 +155,12 @@ describe DataMigrate::DatabaseTasks do
           block.call(pool)
         end
 
-        allow(primary_pool).to receive(:lease_connection).and_return(primary_connection)
-        allow(secondary_pool).to receive(:lease_connection).and_return(secondary_connection)
-        allow(subject).to receive(:database_exists?).with(primary_connection).and_return(false)
-        allow(subject).to receive(:database_exists?).with(secondary_connection).and_return(false)
+        allow(subject).to receive(:database_initialized?) do |pool|
+          initialization_checks[pool] += 1
+          raise ActiveRecord::NoDatabaseError if initialization_checks[pool] == 1
+
+          false
+        end
         allow(subject).to receive(:create) { |db_config| created_configs << db_config }
 
         # Return a path only for the expected per-database format so this spec
@@ -212,6 +214,13 @@ describe DataMigrate::DatabaseTasks do
         expect(subject).to have_received(:load_seed)
       end
 
+      it "loads secondary databases through Rails' sql schema loader when their schema format is sql" do
+        subject.prepare_all_with_data
+
+        expect(ActiveRecord::Tasks::DatabaseTasks).to have_received(:load_schema).with(secondary_db_config, :sql, nil)
+        expect(subject).to have_received(:load).with(primary_data_schema_path).once
+      end
+
       it "restores the primary connection before seeding when data dump uses an override connection" do
         DataMigrate.config.db_configuration = { adapter: "sqlite3", database: "spec/db/override.db" }
 
@@ -238,9 +247,9 @@ describe DataMigrate::DatabaseTasks do
         expect(subject).to have_received(:load_seed)
       end
 
-      it "skips setup work for existing databases but still migrates and dumps" do
-        allow(subject).to receive(:database_exists?).with(primary_connection).and_return(true)
-        allow(subject).to receive(:database_exists?).with(secondary_connection).and_return(true)
+      it "skips setup work for initialized databases but still migrates and dumps" do
+        allow(subject).to receive(:database_initialized?).with(primary_pool).and_return(true)
+        allow(subject).to receive(:database_initialized?).with(secondary_pool).and_return(true)
 
         subject.prepare_all_with_data
 
@@ -252,6 +261,31 @@ describe DataMigrate::DatabaseTasks do
         expect(ActiveRecord::Tasks::DatabaseTasks).to have_received(:dump_schema).with(secondary_db_config, :sql)
         expect(DataMigrate::Tasks::DataMigrateTasks).to have_received(:dump)
         expect(subject).not_to have_received(:load_seed)
+      end
+
+      it "loads schema for provisioned databases that are not yet initialized" do
+        allow(subject).to receive(:database_initialized?).with(primary_pool).and_return(false)
+        allow(subject).to receive(:database_initialized?).with(secondary_pool).and_return(false)
+
+        subject.prepare_all_with_data
+
+        expect(created_configs).to be_empty
+        expect(ActiveRecord::Tasks::DatabaseTasks).to have_received(:load_schema).with(primary_db_config, :ruby, nil)
+        expect(ActiveRecord::Tasks::DatabaseTasks).to have_received(:load_schema).with(secondary_db_config, :sql, nil)
+        expect(subject).to have_received(:load).with(primary_data_schema_path).once
+        expect(subject).to have_received(:migrate_with_data)
+        expect(ActiveRecord::Tasks::DatabaseTasks).to have_received(:dump_schema).with(primary_db_config, :ruby)
+        expect(ActiveRecord::Tasks::DatabaseTasks).to have_received(:dump_schema).with(secondary_db_config, :sql)
+        expect(DataMigrate::Tasks::DataMigrateTasks).to have_received(:dump)
+        expect(subject).to have_received(:load_seed)
+      end
+
+      it "creates missing databases before restoring schema" do
+        subject.prepare_all_with_data
+
+        expect(created_configs).to contain_exactly(primary_db_config, secondary_db_config)
+        expect(ActiveRecord::Tasks::DatabaseTasks).to have_received(:load_schema).with(primary_db_config, :ruby, nil)
+        expect(ActiveRecord::Tasks::DatabaseTasks).to have_received(:load_schema).with(secondary_db_config, :sql, nil)
       end
     end
   end
