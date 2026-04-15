@@ -267,10 +267,15 @@ module DataMigrate
       seeded_database = false
 
       with_temporary_pool(db_config) do |pool|
-        connection = pooled_connection(pool)
-        next if database_exists?(connection)
+        begin
+          database_initialized = database_initialized?(pool)
+        rescue ActiveRecord::NoDatabaseError
+          create(db_config)
+          retry
+        end
 
-        create(db_config)
+        next if database_initialized
+
         load_schema_for(db_config)
         seeded_database = seeds?(db_config)
       end
@@ -278,10 +283,12 @@ module DataMigrate
       seeded_database
     end
 
-    def self.pooled_connection(pool)
-      return pool.lease_connection if pool.respond_to?(:lease_connection)
+    # Match Rails db:prepare behavior: a provisioned-but-empty database still
+    # needs the schema restored before migrations run.
+    def self.database_initialized?(pool)
+      return pool.with_connection { DataMigrate::RailsHelper.schema_migration.table_exists? } if pool.respond_to?(:with_connection)
 
-      pool.connection
+      DataMigrate::RailsHelper.schema_migration.table_exists?
     end
 
     def self.load_schema_for(db_config)
@@ -329,23 +336,13 @@ module DataMigrate
 
     private_class_method :initialize_missing_databases_with_data_schema,
       :initialize_database_with_schema,
-      :pooled_connection,
+      :database_initialized?,
       :load_schema_for,
       :seeds?,
       :schema_format_for,
       :rails_schema_dump_path_for
 
     private
-
-    def database_exists?(connection)
-      if connection.respond_to?(:database_exists?)  # Rails 7.1+
-        connection.database_exists?
-      else
-        connection.table_exists?(ActiveRecord::SchemaMigration.table_name)
-      end
-    rescue ActiveRecord::NoDatabaseError
-      false
-    end
 
     def primary?(db_config)
       if db_config.respond_to?(:primary?)  # Rails 7.0+
