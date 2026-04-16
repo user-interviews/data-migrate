@@ -287,7 +287,12 @@ module DataMigrate
     # needs the schema restored before migrations run.
     def self.database_initialized?(pool)
       schema_migration = DataMigrate::RailsHelper.schema_migration
-      return pool.with_connection { |connection| connection.data_source_exists?(schema_migration.table_name) } if pool.respond_to?(:with_connection)
+
+      if pool.respond_to?(:with_connection)
+        return pool.with_connection do |connection|
+          connection.data_source_exists?(schema_migration.table_name)
+        end
+      end
 
       schema_migration.table_exists?
     end
