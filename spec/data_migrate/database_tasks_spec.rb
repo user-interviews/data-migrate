@@ -105,21 +105,19 @@ describe DataMigrate::DatabaseTasks do
 
     describe :database_initialized? do
       let(:pool) { double("ConnectionPool") }
-      let(:connection) { double("Connection") }
-      let(:schema_migration) { double("SchemaMigration", table_name: "schema_migrations") }
+      let(:schema_migration) { double("SchemaMigration") }
+      let(:migration_connection_pool) { double("MigrationConnectionPool", schema_migration: schema_migration) }
 
-      it "checks schema initialization against the temporary pool connection" do
-        allow(DataMigrate::RailsHelper).to receive(:schema_migration).and_return(schema_migration)
-        allow(pool).to receive(:with_connection).and_yield(connection)
-        allow(connection).to receive(:data_source_exists?).with("schema_migrations").and_return(true)
+      it "checks schema initialization against Rails' migration connection pool" do
+        allow(ActiveRecord::Tasks::DatabaseTasks).to receive(:migration_connection_pool).and_return(migration_connection_pool)
+        allow(schema_migration).to receive(:table_exists?).and_return(true)
 
         expect(subject.send(:database_initialized?, pool)).to be(true)
       end
 
       it "treats provisioned databases without schema_migrations as uninitialized" do
-        allow(DataMigrate::RailsHelper).to receive(:schema_migration).and_return(schema_migration)
-        allow(pool).to receive(:with_connection).and_yield(connection)
-        allow(connection).to receive(:data_source_exists?).with("schema_migrations").and_return(false)
+        allow(ActiveRecord::Tasks::DatabaseTasks).to receive(:migration_connection_pool).and_return(migration_connection_pool)
+        allow(schema_migration).to receive(:table_exists?).and_return(false)
 
         expect(subject.send(:database_initialized?, pool)).to be(false)
       end

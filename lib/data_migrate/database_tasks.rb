@@ -285,16 +285,8 @@ module DataMigrate
 
     # Match Rails db:prepare behavior: a provisioned-but-empty database still
     # needs the schema restored before migrations run.
-    def self.database_initialized?(pool)
-      schema_migration = DataMigrate::RailsHelper.schema_migration
-
-      if pool.respond_to?(:with_connection)
-        return pool.with_connection do |connection|
-          connection.data_source_exists?(schema_migration.table_name)
-        end
-      end
-
-      schema_migration.table_exists?
+    def self.database_initialized?(_pool)
+      ActiveRecord::Tasks::DatabaseTasks.migration_connection_pool.schema_migration.table_exists?
     end
 
     def self.load_schema_for(db_config)
