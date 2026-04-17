@@ -103,6 +103,31 @@ describe DataMigrate::DatabaseTasks do
       end
     end
 
+    describe :database_initialized? do
+      let(:schema_migration) { double("SchemaMigration") }
+      let(:migration_connection_pool) { double("MigrationConnectionPool", schema_migration: schema_migration) }
+
+      before do
+        if ActiveRecord::Tasks::DatabaseTasks.respond_to?(:migration_connection_pool)
+          allow(ActiveRecord::Tasks::DatabaseTasks).to receive(:migration_connection_pool).and_return(migration_connection_pool)
+        else
+          allow(DataMigrate::RailsHelper).to receive(:schema_migration).and_return(schema_migration)
+        end
+      end
+
+      it "checks whether the schema_migrations table exists" do
+        allow(schema_migration).to receive(:table_exists?).and_return(true)
+
+        expect(subject.send(:database_initialized?)).to be(true)
+      end
+
+      it "treats provisioned databases without schema_migrations as uninitialized" do
+        allow(schema_migration).to receive(:table_exists?).and_return(false)
+
+        expect(subject.send(:database_initialized?)).to be(false)
+      end
+    end
+
     describe :prepare_all_with_data do
       let(:primary_db_config) do
         ActiveRecord::DatabaseConfigurations::HashConfig.new(
@@ -138,6 +163,7 @@ describe DataMigrate::DatabaseTasks do
 
       before do
         initialization_checks = Hash.new(0)
+        current_pool = nil
 
         allow(subject).to receive(:each_current_configuration) do |*_args, &block|
           block.call(primary_db_config)
@@ -152,12 +178,13 @@ describe DataMigrate::DatabaseTasks do
               secondary_pool
             end
 
+          current_pool = pool
           block.call(pool)
         end
 
-        allow(subject).to receive(:database_initialized?) do |pool|
-          initialization_checks[pool] += 1
-          raise ActiveRecord::NoDatabaseError if initialization_checks[pool] == 1
+        allow(subject).to receive(:database_initialized?) do
+          initialization_checks[current_pool] += 1
+          raise ActiveRecord::NoDatabaseError if initialization_checks[current_pool] == 1
 
           false
         end
@@ -248,8 +275,7 @@ describe DataMigrate::DatabaseTasks do
       end
 
       it "skips setup work for initialized databases but still migrates and dumps" do
-        allow(subject).to receive(:database_initialized?).with(primary_pool).and_return(true)
-        allow(subject).to receive(:database_initialized?).with(secondary_pool).and_return(true)
+        allow(subject).to receive(:database_initialized?).and_return(true)
 
         subject.prepare_all_with_data
 
@@ -264,8 +290,7 @@ describe DataMigrate::DatabaseTasks do
       end
 
       it "loads schema for provisioned databases that are not yet initialized" do
-        allow(subject).to receive(:database_initialized?).with(primary_pool).and_return(false)
-        allow(subject).to receive(:database_initialized?).with(secondary_pool).and_return(false)
+        allow(subject).to receive(:database_initialized?).and_return(false)
 
         subject.prepare_all_with_data
 
